@@ -1,3 +1,4 @@
+#include <thread>
 #include "raylib.h"
 #define RAYGUI_IMPLEMENTATION
 #include "raygui.h"
@@ -7,6 +8,49 @@ inline bool ColorsAreEqual(const Color& c1, const Color& c2) {
 }
 
 inline bool ColorsEqualAlpha(const Color& c1, const Color& c2) { return c1.a == c2.a; }
+
+Image board;
+Image nextBoard;
+constexpr int numThreads = 8;
+
+void GameOfLifeLogic(Rectangle rect) {
+  // Game of life logic here:
+  // For each location on the board, count the number of neighbors
+  const int16_t oX = static_cast<int16_t>(rect.x);
+  const int16_t oY = static_cast<int16_t>(rect.y);
+  const int16_t width = static_cast<int16_t>(rect.width);
+  const int16_t height = static_cast<int16_t>(rect.height);
+  for (int16_t x = oX; x < width + oX; ++x) {
+    for (int16_t y = oY; y < height + oY; ++y) {
+      const int16_t left = ((x - 1) + 1280) % 1280;
+      const int16_t right = ((x + 1) + 1280) % 1280;
+      const int16_t above = ((y - 1) + 800) % 800;
+      const int16_t below = ((y + 1) + 800) % 800;
+      int8_t neighbors = 0;
+      bool aliveNextFrame = false;
+
+      if (!ColorsEqualAlpha(GetImageColor(board, left, above), BLANK)) ++neighbors;
+      if (!ColorsEqualAlpha(GetImageColor(board, x, above), BLANK)) ++neighbors;
+      if (!ColorsEqualAlpha(GetImageColor(board, right, above), BLANK)) ++neighbors;
+      if (!ColorsEqualAlpha(GetImageColor(board, left, y), BLANK)) ++neighbors;
+      if (!ColorsEqualAlpha(GetImageColor(board, right, y), BLANK)) ++neighbors;
+      if (!ColorsEqualAlpha(GetImageColor(board, left, below), BLANK)) ++neighbors;
+      if (!ColorsEqualAlpha(GetImageColor(board, x, below), BLANK)) ++neighbors;
+      if (!ColorsEqualAlpha(GetImageColor(board, right, below), BLANK)) ++neighbors;
+
+      if (!ColorsEqualAlpha(GetImageColor(board, x, y), BLANK)) {
+        // If current cell is alive, it lives next frame if it has 2 or 3
+        // neighbors
+        aliveNextFrame = neighbors == 2 || neighbors == 3;
+      } else {
+        // Dead cells come back to life if they have exactly 3 live
+        // neighbors
+        aliveNextFrame = neighbors == 3;
+      }
+      ImageDrawPixel(&nextBoard, x, y, aliveNextFrame ? PURPLE : BLANK);
+    }
+  }
+}
 
 //------------------------------------------------------------------------------------
 // Program main entry point
@@ -22,13 +66,13 @@ int main(void) {
 
   InitWindow(screenWidth, screenHeight, "Raylib Game of Life");
 
-  Image board = LoadImage("assets/glidergunHD.png");
+  board = LoadImage("assets/glidergunHD.png");
   const int gameWidth = board.width;
   const int gameHeight = board.height;
   const Vector2 origin{0, 0};
   const Rectangle gameRect{0, 0, static_cast<float>(gameWidth), static_cast<float>(gameHeight)};
   const Rectangle screenRect{0, 0, screenWidth, screenHeight};
-  Image nextBoard = GenImageColor(gameWidth, gameHeight, BLANK);
+  nextBoard = GenImageColor(gameWidth, gameHeight, BLANK);
 
   // NOTE: Textures MUST be loaded after Window initialization (OpenGL context
   // is required)
@@ -50,37 +94,15 @@ int main(void) {
     }
 
     if (shouldUpdate) {
-      // Game of life logic here:
-      // For each location on the board, count the number of neighbors
-      for (size_t x = 0; x < gameWidth; ++x) {
-        for (size_t y = 0; y < gameHeight; ++y) {
-          const int left = ((x - 1) + gameWidth) % gameWidth;
-          const int right = ((x + 1) + gameWidth) % gameWidth;
-          const int above = ((y - 1) + gameHeight) % gameHeight;
-          const int below = ((y + 1) + gameHeight) % gameHeight;
-          int neighbors = 0;
-          bool aliveNextFrame = false;
-
-          if (!ColorsEqualAlpha(GetImageColor(board, left, above), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, x, above), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, right, above), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, left, y), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, right, y), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, left, below), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, x, below), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, right, below), BLANK)) ++neighbors;
-
-          if (!ColorsEqualAlpha(GetImageColor(board, x, y), BLANK)) {
-            // If current cell is alive, it lives next frame if it has 2 or 3
-            // neighbors
-            aliveNextFrame = neighbors == 2 || neighbors == 3;
-          } else {
-            // Dead cells come back to life if they have exactly 3 live
-            // neighbors
-            aliveNextFrame = neighbors == 3;
-          }
-          ImageDrawPixel(&nextBoard, x, y, aliveNextFrame ? PURPLE : BLANK);
-        }
+      std::vector<std::thread> workThreads;
+      for (size_t i = 0; i < numThreads; ++i) {
+        float heightSubdivision = static_cast<float>(gameHeight) / static_cast<float>(numThreads);
+        float startY = heightSubdivision * static_cast<float>(i);
+        workThreads.emplace_back(
+            std::thread{GameOfLifeLogic, Rectangle{0.f, startY, static_cast<float>(gameWidth), heightSubdivision}});
+      }
+      for (auto& t : workThreads) {
+        t.join();
       }
     }
 
