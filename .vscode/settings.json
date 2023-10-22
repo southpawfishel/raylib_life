@@ -1,0 +1,11 @@
+{
+  "editor.formatOnSave": true,
+  "editor.rulers": [120],
+  "editor.defaultFormatter": "xaver.clang-format",
+  "C_Cpp.clang_format_fallbackStyle": "Visual Studio",
+  "C_Cpp.formatting": "clangFormat",
+  "files.associations": {
+    "thread": "cpp",
+    "vector": "cpp"
+  },
+}
