@@ -1,72 +1,99 @@
 #include <atomic>
 #include <bitset>
-#include <iostream>
+#include <cmath>
 #include <thread>
+#include <vector>
 #include "concurrentqueue.h"
 #include "raylib.h"
 #define RAYGUI_IMPLEMENTATION
 #include "raygui.h"
 #include "tracy/TracyC.h"
 
-constexpr int boardW = 1280;
-constexpr int boardH = 800;
+constexpr size_t screenWidth = 1280;
+constexpr size_t screenHeight = 800;
+constexpr size_t boardW = screenWidth;
+constexpr size_t boardH = screenHeight;
+
+// Game state
 std::bitset<boardW * boardH> board;
 std::bitset<boardW * boardH> nextBoard;
-constexpr int numThreads = 4;
+
+// Threads and synchronization
+constexpr size_t numThreads = 4;
 std::vector<std::thread> workThreads;
 std::atomic_bool appRunning = ATOMIC_VAR_INIT(false);
-std::atomic_int jobsFinished = ATOMIC_VAR_INIT(0);
+std::atomic_bool jobsReady = ATOMIC_VAR_INIT(false);
+std::atomic_int numJobsFinished = ATOMIC_VAR_INIT(0);
+std::atomic_bool allJobsFinished = ATOMIC_VAR_INIT(false);
 moodycamel::ConcurrentQueue<Rectangle> workQueue;
 
-constexpr char* const tracy_GameOfLife = "GameOfLifeLogicThread";
-constexpr char* const tracy_Update = "Update";
-constexpr char* const tracy_Waiting = "Waiting";
-constexpr char* const tracy_Render = "Render";
+// Optimizations for reducing amount of drawing per update
+constexpr size_t subDivisionSize = 32;
+constexpr size_t numXSubdivisions = boardW / subDivisionSize;
+constexpr size_t numYSubdivisions = boardH / subDivisionSize;
+std::array<Rectangle, numXSubdivisions * numYSubdivisions> drawRegions;
+std::bitset<drawRegions.size()> dirtyRegions;
 
-inline size_t GetBitsetIndex(const size_t& x, const size_t& y) { return (y * boardW) + x; }
+// Constants for profiling
+const char* tracyWorkTag = "GameOfLifeWork";
+const char* tracyUpdateTag = "Update";
+const char* tracyRenderTag = "Render";
+const char* tracyEndDrawingTag = "EndDrawing";
+
+inline size_t GetDrawRegionIndex(const size_t& x, const size_t& y) { return (y * numXSubdivisions) + x; }
+inline size_t GetBoardBitsetIndex(const size_t& x, const size_t& y) { return (y * boardW) + x; }
 
 void GameOfLifeLogic() {
   while (appRunning) {
-    Rectangle rect;
-    if (workQueue.try_dequeue(rect)) {
-      TracyCZoneN(GameOfLifeLogicThread, tracy_GameOfLife, true);
-      // Game of life logic here:
+    Rectangle workRegion;
+    if (workQueue.try_dequeue(workRegion)) {
+      TracyCZoneNS(GameOfLifeLogicThread, tracyWorkTag, 8, true);
       // For each location on the board, count the number of neighbors
-      const size_t oX = static_cast<size_t>(rect.x);
-      const size_t oY = static_cast<size_t>(rect.y);
-      const size_t width = static_cast<size_t>(rect.width);
-      const size_t height = static_cast<size_t>(rect.height);
+      const size_t oX = static_cast<size_t>(workRegion.x);
+      const size_t oY = static_cast<size_t>(workRegion.y);
+      const size_t width = static_cast<size_t>(workRegion.width);
+      const size_t height = static_cast<size_t>(workRegion.height);
       for (size_t x = oX; x < width + oX; ++x) {
         for (size_t y = oY; y < height + oY; ++y) {
-          const size_t left = ((x - 1) + 1280) % 1280;
-          const size_t right = ((x + 1) + 1280) % 1280;
-          const size_t above = ((y - 1) + 800) % 800;
-          const size_t below = ((y + 1) + 800) % 800;
+          const size_t left = (x > 0) ? x - 1 : boardW - 1;
+          const size_t right = (x < boardW - 1) ? x + 1 : 0;
+          const size_t above = (y > 0) ? y - 1 : boardH - 1;
+          const size_t below = (y < boardH - 1) ? y + 1 : 0;
           size_t neighbors = 0;
           bool aliveNextFrame = false;
 
-          if (board.test(GetBitsetIndex(left, above))) ++neighbors;
-          if (board.test(GetBitsetIndex(x, above))) ++neighbors;
-          if (board.test(GetBitsetIndex(right, above))) ++neighbors;
-          if (board.test(GetBitsetIndex(left, y))) ++neighbors;
-          if (board.test(GetBitsetIndex(right, y))) ++neighbors;
-          if (board.test(GetBitsetIndex(left, below))) ++neighbors;
-          if (board.test(GetBitsetIndex(x, below))) ++neighbors;
-          if (board.test(GetBitsetIndex(right, below))) ++neighbors;
+          if (board.test(GetBoardBitsetIndex(left, above))) ++neighbors;
+          if (board.test(GetBoardBitsetIndex(x, above))) ++neighbors;
+          if (board.test(GetBoardBitsetIndex(right, above))) ++neighbors;
+          if (board.test(GetBoardBitsetIndex(left, y))) ++neighbors;
+          if (board.test(GetBoardBitsetIndex(right, y))) ++neighbors;
+          if (board.test(GetBoardBitsetIndex(left, below))) ++neighbors;
+          if (board.test(GetBoardBitsetIndex(x, below))) ++neighbors;
+          if (board.test(GetBoardBitsetIndex(right, below))) ++neighbors;
 
-          if (board.test(GetBitsetIndex(x, y))) {
-            // If current cell is alive, it lives next frame if it has 2 or 3
-            // neighbors
+          const auto currentlyAlive = board.test(GetBoardBitsetIndex(x, y));
+          if (currentlyAlive) {
+            // If current cell is alive, it lives next frame if it has 2 or 3 neighbors
             aliveNextFrame = neighbors == 2 || neighbors == 3;
           } else {
-            // Dead cells come back to life if they have exactly 3 live
-            // neighbors
+            // Dead cells come back to life if they have exactly 3 live neighbors
             aliveNextFrame = neighbors == 3;
           }
-          nextBoard.set(GetBitsetIndex(x, y), aliveNextFrame);
+          nextBoard.set(GetBoardBitsetIndex(x, y), aliveNextFrame);
+
+          // Remember where we've modified this frame so we know what region to redraw
+          if (currentlyAlive != aliveNextFrame) {
+            // Using shift by 5 as a quick divide by 32 to avoid division in hot loop
+            dirtyRegions.set(GetDrawRegionIndex(x >> 5, y >> 5), true);
+          }
         }
       }
-      ++jobsFinished;
+      ++numJobsFinished;
+
+      if (numJobsFinished == numThreads) {
+        allJobsFinished = true;
+        allJobsFinished.notify_all();
+      }
       TracyCZoneEnd(GameOfLifeLogicThread);
     }
   }
@@ -78,16 +105,10 @@ void GameOfLifeLogic() {
 int main(void) {
   // Initialization
   //--------------------------------------------------------------------------------------
-  const int screenWidth = 1280;
-  const int screenHeight = 800;
-
-  const int updateRate = 1;  // every N frames
-  int frameCount = 0;
+  constexpr size_t updateRate = 1;  // every N frames
+  size_t frameCount = 0;
 
   // Create our work threads and let them know they can run.
-  if (ATOMIC_INT_LOCK_FREE && ATOMIC_BOOL_LOCK_FREE) {
-    std::cout << "Lock free atomics are available!" << std::endl;
-  }
   appRunning = true;
   for (size_t i = 0; i < numThreads; ++i) {
     workThreads.emplace_back(std::thread{GameOfLifeLogic});
@@ -95,24 +116,34 @@ int main(void) {
 
   InitWindow(screenWidth, screenHeight, "Raylib Game of Life");
 
+  // The initial board state is loaded as an image, makes it easy to inspect and edit
   Image boardImage = LoadImage("assets/glidergunHD.png");
-  Image nextImage = GenImageColor(boardW, boardH, BLANK);
-  const int gameWidth = boardW;
-  const int gameHeight = boardH;
+
+  // Drawing size/location of the board
   const Vector2 origin{0, 0};
-  const Rectangle gameRect{0, 0, static_cast<float>(gameWidth), static_cast<float>(gameHeight)};
+  const Rectangle gameRect{0, 0, static_cast<float>(boardW), static_cast<float>(boardH)};
   const Rectangle screenRect{0, 0, screenWidth, screenHeight};
 
-  // Import board image into bitset
-  for (size_t x = 0; x < gameWidth; ++x) {
-    for (size_t y = 0; y < gameHeight; ++y) {
-      board.set(GetBitsetIndex(x, y), GetImageColor(boardImage, x, y).a != 0);
+  // Establish dirty regions which we use to mark where to redraw the board
+  for (size_t x = 0; x < numXSubdivisions; ++x) {
+    for (size_t y = 0; y < numYSubdivisions; ++y) {
+      drawRegions[GetDrawRegionIndex(x, y)].x = x * subDivisionSize;
+      drawRegions[GetDrawRegionIndex(x, y)].y = y * subDivisionSize;
+      drawRegions[GetDrawRegionIndex(x, y)].width = subDivisionSize;
+      drawRegions[GetDrawRegionIndex(x, y)].height = subDivisionSize;
     }
   }
 
-  // NOTE: Textures MUST be loaded after Window initialization (OpenGL context
-  // is required)
+  // Import board image into bitset
+  for (size_t x = 0; x < boardW; ++x) {
+    for (size_t y = 0; y < boardH; ++y) {
+      board.set(GetBoardBitsetIndex(x, y), GetImageColor(boardImage, x, y).a != 0);
+    }
+  }
+
+  // NOTE: Textures MUST be loaded after Window initialization (OpenGL context is required)
   Texture2D boardTexture = LoadTextureFromImage(boardImage);
+  UpdateTexture(boardTexture, boardImage.data);
 
   SetTargetFPS(60);  // Set our game to run at 60 frames-per-second
   //--------------------------------------------------------------------------------------
@@ -123,66 +154,73 @@ int main(void) {
     // Update
     //----------------------------------------------------------------------------------
     // Check if its time to run our frame logic
-    TracyCZoneN(Update, tracy_Update, true);
+    TracyCZoneNS(Update, tracyUpdateTag, 8, true);
     bool shouldUpdate = false;
-    if (++frameCount > updateRate) {
+    if (frameCount++ > updateRate) {
       shouldUpdate = true;
       frameCount -= updateRate;
     }
 
     if (shouldUpdate) {
+      // Mark no areas as dirty
+      dirtyRegions.reset();
       // Reset work counter
-      jobsFinished = 0;
+      allJobsFinished = false;
+      numJobsFinished = 0;
       // Enqueue new work
       for (size_t i = 0; i < numThreads; ++i) {
-        float heightSubdivision = static_cast<float>(gameHeight) / static_cast<float>(numThreads);
+        // Subdivide the board by height into sets of rows which each are independently processed by a work thread
+        float heightSubdivision = static_cast<float>(boardH) / static_cast<float>(numThreads);
         float startY = heightSubdivision * static_cast<float>(i);
-        workQueue.enqueue(Rectangle{0.f, startY, static_cast<float>(gameWidth), heightSubdivision});
+        workQueue.enqueue(Rectangle{0.f, startY, static_cast<float>(boardW), heightSubdivision});
       }
+      // Start work
+      jobsReady = true;
+      jobsReady.notify_all();
     }
     TracyCZoneEnd(Update);
 
-    TracyCZoneN(Waiting, tracy_Waiting, true);
-    while (shouldUpdate && jobsFinished != numThreads) {
-      // Wait for jobs to finish
-      std::this_thread::sleep_for(std::chrono::microseconds(500));
+    if (shouldUpdate) {
+      allJobsFinished.wait(false);
     }
-    TracyCZoneEnd(Waiting);
 
     // Draw
     //----------------------------------------------------------------------------------
-    TracyCZoneN(Rendering, tracy_Render, true);
+    TracyCZoneNS(Rendering, tracyRenderTag, 8, true);
     BeginDrawing();
 
     ClearBackground(RAYWHITE);
 
     if (shouldUpdate) {
-      // Write new board to image
-      for (size_t x = 0; x < gameWidth; ++x) {
-        for (size_t y = 0; y < gameHeight; ++y) {
-          ImageDrawPixel(&nextImage, x, y, board.test(GetBitsetIndex(x, y)) ? PURPLE : BLANK);
+      // Write new board to image, only redrawing the dirty portions of the screen
+      bool imageChanged = false;
+      for (size_t regionIdx = 0; regionIdx < drawRegions.size(); ++regionIdx) {
+        if (dirtyRegions.test(regionIdx)) {
+          auto const& region = drawRegions[regionIdx];
+          for (size_t x = region.x; x < region.width + region.x; ++x) {
+            for (size_t y = region.y; y < region.height + region.y; ++y) {
+              ImageDrawPixel(&boardImage, x, y, board.test(GetBoardBitsetIndex(x, y)) ? PURPLE : BLANK);
+            }
+          }
+          imageChanged = true;
         }
       }
-      UpdateTexture(boardTexture, nextImage.data);
+      if (imageChanged) {
+        UpdateTexture(boardTexture, boardImage.data);
+      }
     }
-    DrawTexturePro(boardTexture, gameRect, screenRect, origin, 0.0f, WHITE);
+    DrawTexturePro(boardTexture, gameRect, screenRect, origin, 0.f, WHITE);
 
     DrawFPS(10, 780);
 
     if (shouldUpdate) {
-      // Swap boards
-      auto temp = board;
-      board = nextBoard;
-      nextBoard = temp;
-
-      // Swap images
-      auto temp1 = boardImage;
-      boardImage = nextImage;
-      nextImage = temp1;
+      std::swap(board, nextBoard);
     }
     TracyCZoneEnd(Rendering);
 
+    TracyCZoneNS(EndOfDrawing, tracyEndDrawingTag, 8, true);
     EndDrawing();
+    TracyCZoneEnd(EndOfDrawing);
     //----------------------------------------------------------------------------------
     TracyCFrameMark;
   }
