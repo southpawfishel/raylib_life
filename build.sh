@@ -1,5 +1,5 @@
 if [ "$(uname)" == "Darwin" ]; then
-  cmake -B build -DPLATFORM=Desktop -DCMAKE_BUILD_TYPE=Release -DUSE_EXTERNAL_GLFW=ON
+  cmake -B build -DPLATFORM=Desktop -DCMAKE_BUILD_TYPE=Release -DUSE_EXTERNAL_GLFW=OFF
   cd build
   make
   cd ..

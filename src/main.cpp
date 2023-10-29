@@ -42,45 +42,36 @@ int main(void) {
   {
     // Update
     //----------------------------------------------------------------------------------
-    // Check if its time to run our frame logic
-    bool shouldUpdate = false;
-    if (frameCount++ > updateRate) {
-      shouldUpdate = true;
-      frameCount -= updateRate;
-    }
+    // Game of life logic here:
+    // For each location on the board, count the number of neighbors
+    for (size_t x = 0; x < gameWidth; ++x) {
+      for (size_t y = 0; y < gameHeight; ++y) {
+        const int left = ((x - 1) + gameWidth) % gameWidth;
+        const int right = ((x + 1) + gameWidth) % gameWidth;
+        const int above = ((y - 1) + gameHeight) % gameHeight;
+        const int below = ((y + 1) + gameHeight) % gameHeight;
+        int neighbors = 0;
+        bool aliveNextFrame = false;
 
-    if (shouldUpdate) {
-      // Game of life logic here:
-      // For each location on the board, count the number of neighbors
-      for (size_t x = 0; x < gameWidth; ++x) {
-        for (size_t y = 0; y < gameHeight; ++y) {
-          const int left = ((x - 1) + gameWidth) % gameWidth;
-          const int right = ((x + 1) + gameWidth) % gameWidth;
-          const int above = ((y - 1) + gameHeight) % gameHeight;
-          const int below = ((y + 1) + gameHeight) % gameHeight;
-          int neighbors = 0;
-          bool aliveNextFrame = false;
+        if (!ColorsEqualAlpha(GetImageColor(board, left, above), BLANK)) ++neighbors;
+        if (!ColorsEqualAlpha(GetImageColor(board, x, above), BLANK)) ++neighbors;
+        if (!ColorsEqualAlpha(GetImageColor(board, right, above), BLANK)) ++neighbors;
+        if (!ColorsEqualAlpha(GetImageColor(board, left, y), BLANK)) ++neighbors;
+        if (!ColorsEqualAlpha(GetImageColor(board, right, y), BLANK)) ++neighbors;
+        if (!ColorsEqualAlpha(GetImageColor(board, left, below), BLANK)) ++neighbors;
+        if (!ColorsEqualAlpha(GetImageColor(board, x, below), BLANK)) ++neighbors;
+        if (!ColorsEqualAlpha(GetImageColor(board, right, below), BLANK)) ++neighbors;
 
-          if (!ColorsEqualAlpha(GetImageColor(board, left, above), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, x, above), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, right, above), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, left, y), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, right, y), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, left, below), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, x, below), BLANK)) ++neighbors;
-          if (!ColorsEqualAlpha(GetImageColor(board, right, below), BLANK)) ++neighbors;
-
-          if (!ColorsEqualAlpha(GetImageColor(board, x, y), BLANK)) {
-            // If current cell is alive, it lives next frame if it has 2 or 3
-            // neighbors
-            aliveNextFrame = neighbors == 2 || neighbors == 3;
-          } else {
-            // Dead cells come back to life if they have exactly 3 live
-            // neighbors
-            aliveNextFrame = neighbors == 3;
-          }
-          ImageDrawPixel(&nextBoard, x, y, aliveNextFrame ? PURPLE : BLANK);
+        if (!ColorsEqualAlpha(GetImageColor(board, x, y), BLANK)) {
+          // If current cell is alive, it lives next frame if it has 2 or 3
+          // neighbors
+          aliveNextFrame = neighbors == 2 || neighbors == 3;
+        } else {
+          // Dead cells come back to life if they have exactly 3 live
+          // neighbors
+          aliveNextFrame = neighbors == 3;
         }
+        ImageDrawPixel(&nextBoard, x, y, aliveNextFrame ? PURPLE : BLANK);
       }
     }
 
@@ -90,19 +81,15 @@ int main(void) {
 
     ClearBackground(RAYWHITE);
 
-    if (shouldUpdate) {
-      UpdateTexture(boardTexture, nextBoard.data);
-    }
+    UpdateTexture(boardTexture, nextBoard.data);
     DrawTexturePro(boardTexture, gameRect, screenRect, origin, 0.0f, WHITE);
 
     DrawFPS(10, 780);
 
-    if (shouldUpdate) {
-      // Swap boards
-      auto temp = board;
-      board = nextBoard;
-      nextBoard = temp;
-    }
+    // Swap boards
+    auto temp = board;
+    board = nextBoard;
+    nextBoard = temp;
 
     EndDrawing();
     //----------------------------------------------------------------------------------
