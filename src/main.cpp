@@ -155,34 +155,26 @@ int main(void) {
     //----------------------------------------------------------------------------------
     // Check if its time to run our frame logic
     TracyCZoneNS(Update, tracyUpdateTag, 8, true);
-    bool shouldUpdate = false;
-    if (frameCount++ > updateRate) {
-      shouldUpdate = true;
-      frameCount -= updateRate;
+    // Mark no areas as dirty
+    dirtyRegions.reset();
+    // Reset work counter
+    allJobsFinished = false;
+    numJobsFinished = 0;
+    // Enqueue new work
+    for (size_t i = 0; i < numThreads; ++i) {
+      // Subdivide the board by height into sets of rows which each are independently processed by a work thread
+      float heightSubdivision = static_cast<float>(boardH) / static_cast<float>(numThreads);
+      float startY = heightSubdivision * static_cast<float>(i);
+      workQueue.enqueue(Rectangle{0.f, startY, static_cast<float>(boardW), heightSubdivision});
     }
-
-    if (shouldUpdate) {
-      // Mark no areas as dirty
-      dirtyRegions.reset();
-      // Reset work counter
-      allJobsFinished = false;
-      numJobsFinished = 0;
-      // Enqueue new work
-      for (size_t i = 0; i < numThreads; ++i) {
-        // Subdivide the board by height into sets of rows which each are independently processed by a work thread
-        float heightSubdivision = static_cast<float>(boardH) / static_cast<float>(numThreads);
-        float startY = heightSubdivision * static_cast<float>(i);
-        workQueue.enqueue(Rectangle{0.f, startY, static_cast<float>(boardW), heightSubdivision});
-      }
-      // Start work
-      jobsReady = true;
-      jobsReady.notify_all();
-    }
+    // Start work
+    jobsReady = true;
+    jobsReady.notify_all();
     TracyCZoneEnd(Update);
 
-    if (shouldUpdate) {
-      allJobsFinished.wait(false);
-    }
+    allJobsFinished.wait(false);
+    // Once all work is done, swap next and current board
+    std::swap(board, nextBoard);
 
     // Draw
     //----------------------------------------------------------------------------------
@@ -191,34 +183,29 @@ int main(void) {
 
     ClearBackground(RAYWHITE);
 
-    if (shouldUpdate) {
-      // Write new board to image, only redrawing the dirty portions of the screen
-      bool imageChanged = false;
-      for (size_t regionIdx = 0; regionIdx < drawRegions.size(); ++regionIdx) {
-        if (dirtyRegions.test(regionIdx)) {
-          auto const& region = drawRegions[regionIdx];
-          for (size_t x = region.x; x < region.width + region.x; ++x) {
-            for (size_t y = region.y; y < region.height + region.y; ++y) {
-              ImageDrawPixel(&boardImage, x, y, board.test(GetBoardBitsetIndex(x, y)) ? PURPLE : BLANK);
-            }
+    // Write new board to image, only redrawing the dirty portions of the screen
+    bool imageChanged = false;
+    for (size_t regionIdx = 0; regionIdx < drawRegions.size(); ++regionIdx) {
+      if (dirtyRegions.test(regionIdx)) {
+        auto const& region = drawRegions[regionIdx];
+        for (size_t x = region.x; x < region.width + region.x; ++x) {
+          for (size_t y = region.y; y < region.height + region.y; ++y) {
+            ImageDrawPixel(&boardImage, x, y, board.test(GetBoardBitsetIndex(x, y)) ? PURPLE : BLANK);
           }
-          imageChanged = true;
         }
+        imageChanged = true;
       }
-      if (imageChanged) {
-        UpdateTexture(boardTexture, boardImage.data);
-      }
+    }
+    if (imageChanged) {
+      UpdateTexture(boardTexture, boardImage.data);
     }
     DrawTexturePro(boardTexture, gameRect, screenRect, origin, 0.f, WHITE);
 
     DrawFPS(10, 780);
-
-    if (shouldUpdate) {
-      std::swap(board, nextBoard);
-    }
     TracyCZoneEnd(Rendering);
 
     TracyCZoneNS(EndOfDrawing, tracyEndDrawingTag, 8, true);
+    // Tell raylib we're ready to submit the frame to be drawn, swap buffers, and update timers
     EndDrawing();
     TracyCZoneEnd(EndOfDrawing);
     //----------------------------------------------------------------------------------
